@@ -106,28 +106,31 @@ try:
     forecast_df_selected = forecast_df[['tanggal', 'jenis', 'dest_name', 'tonase']]
 
     dd = forecast_df_selected[['tanggal', 'jenis', 'dest_name', 'tonase']].astype(str)
-    dd['tanggal'] = pd.to_datetime(dd['tanggal'])
+    # dd['tanggal'] = pd.to_datetime(dd['tanggal'])
+    dd['tanggal'] = pd.to_datetime(dd['tanggal'], format='%Y-%m-%d', errors='coerce').dt.date
+
 
     # Insert into DB
     for index, row in dd.iterrows():
         cursor.execute("""
-            IF EXISTS (SELECT 1 FROM DM_forecasting_transport_transaction_d WHERE tanggal = ?)
+            IF EXISTS (SELECT 1 FROM dwh_prod.dwh.DM_forecasting_transport_transaction_d WHERE tanggal = ?)
             BEGIN
-                UPDATE DM_forecasting_transport_transaction_d
+                UPDATE dwh_prod.dwh.DM_forecasting_transport_transaction_d
                 SET jenis = ?, dest_name = ?, tonase = ?
                 WHERE tanggal = ?
             END
             ELSE
             BEGIN
-                INSERT INTO DM_forecasting_transport_transaction_d (tanggal, jenis, dest_name, tonase)
+                INSERT INTO dwh_prod.dwh.DM_forecasting_transport_transaction_d (tanggal, jenis, dest_name, tonase)
                 VALUES (?, ?, ?, ?)
             END
             """, 
-            index.date(), row['jenis'], row['dest_name'], row['tonase'],
-            index.date(),  # Untuk kondisi WHERE di bagian UPDATE
-            index.date(), row['jenis'], row['dest_name'], row['tonase'])  # Untuk INSERT
+            row['tanggal'], row['jenis'], row['dest_name'], row['tonase'],
+            row['tanggal'],  # Untuk kondisi WHERE di bagian UPDATE
+            row['tanggal'], row['jenis'], row['dest_name'], row['tonase'])  # Untuk INSERT
+
     cnxn.commit()
-    print(dd.info())
+
     print(dd.head())
 
 except Exception as e:
