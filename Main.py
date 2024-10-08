@@ -10,36 +10,39 @@ import numpy as np
 load_dotenv()
 
 try:
+    # Koneksi ke database
     server = os.environ['SERVER']
     database = os.environ['DATABASE']
     username = os.environ['USERNAME_1']
     password = os.environ['PASSWORD']
 
-
     cnxn = pyodbc.connect('DRIVER={ODBC Driver 17 for SQL Server};SERVER='+server+';DATABASE='+database+';UID='+username+';PWD='+password)
     cursor = cnxn.cursor()
 
+    # Query data dari database
     query = "SELECT * FROM dwh_prod.dwh.DM_transport_transaction;" 
-
     data = pd.read_sql(query, cnxn)
+
+    # Data real dari query pertama
     df_transport_real = data[data['jenis'] == 'Real']
     df_pivot = df_transport_real.pivot_table(index=['tanggal', 'jenis'], columns='dest_name', values='tonase', aggfunc='sum').reset_index()
     df_pivot['total'] = df_pivot.sum(axis=1, numeric_only=True)
-    df_pivot['tanggal'] = pd.to_datetime(df_pivot['tanggal'], format='%Y-%m-%d')
+    df_pivot['tanggal'] = pd.to_datetime(df_pivot['tanggal'], errors='coerce')
 
+    # Blueprint dataframe
     blueprint = df_pivot[['tanggal', 'Kertapati', 'Tarahan', 'total']].copy()
     df = blueprint.copy()
     df['Kertapati'].fillna(df['Kertapati'].median(), inplace=True)
     df['Tarahan'].fillna(df['Tarahan'].median(), inplace=True)
     df['total'].fillna(df['total'].median(), inplace=True)
-    df['tanggal'] = pd.to_datetime(df['tanggal'])
     df = df.sort_values('tanggal').set_index('tanggal')
-    
-    # load models
-    # kertapati_model = load_model('./models/kertapati_lstm_model.h5', custom_objects={'mse': mean_squared_error})
-    # tarahan_model = load_model('./models/tarahan_lstm_model.h5', custom_objects={'mse': mean_squared_error})
-    # total_model = load_model('./models/total_lstm_model.h5', custom_objects={'mse': mean_squared_error})
 
+    # Load models
+    kertapati_model = load_model('./models/kertapati_lstm_model.h5', custom_objects={'mse': mean_squared_error})
+    tarahan_model = load_model('./models/tarahan_lstm_model.h5', custom_objects={'mse': mean_squared_error})
+    total_model = load_model('./models/total_lstm_model.h5', custom_objects={'mse': mean_squared_error})
+
+# Fungsi prediksi untuk kolom masa depan
     def predict_column_future(df, column_name, model, look_back=30, num_future_days=150):
         train_data = df[[column_name]].values
         scaler = MinMaxScaler(feature_range=(0, 1))
@@ -52,9 +55,9 @@ try:
         X_test = np.reshape(X_test, (X_test.shape[0], X_test.shape[1], 1))
 
         predicted_scaled = model.predict(X_test)
-
         predicted_column = scaler.inverse_transform(predicted_scaled)
 
+        # Prediksi masa depan
         last_30_days = train_data_scaled[-look_back:]
         predicted_future = []
         for _ in range(num_future_days):
@@ -64,77 +67,85 @@ try:
             last_30_days = np.append(last_30_days[1:], predicted_scaled_future[0])
 
         predicted_future = scaler.inverse_transform(np.array(predicted_future).reshape(-1, 1))
-
         combined_data = np.concatenate((train_data, predicted_column, predicted_future))
 
+        # Membuat tanggal masa depan
         last_date = df.index[-1]
         future_dates = pd.date_range(start=last_date + pd.DateOffset(days=1), periods=num_future_days)
-
         future_df = pd.DataFrame({column_name: predicted_future.flatten()}, index=future_dates)
-
         combined_df = pd.concat([df[column_name], future_df])
 
         return predicted_future, combined_df
 
-    # Load models
-    kertapati_model = load_model('./models/kertapati_lstm_model.h5', custom_objects={'mse': mean_squared_error})
-    tarahan_model = load_model('./models/tarahan_lstm_model.h5', custom_objects={'mse': mean_squared_error})
-    total_model = load_model('./models/total_lstm_model.h5', custom_objects={'mse': mean_squared_error})
-
-    # Apply the function for each column
+    # Prediksi masing-masing kolom
     predicted_kertapati, combined_kertapati = predict_column_future(df, 'Kertapati', kertapati_model)
     predicted_tarahan, combined_tarahan = predict_column_future(df, 'Tarahan', tarahan_model)
     predicted_total, combined_total = predict_column_future(df, 'total', total_model)
 
-    # Combine all predictions into one DataFrame
+    # Gabungkan prediksi
     combined_df = pd.concat([combined_kertapati, combined_tarahan, combined_total], axis=1)
 
-    # Create a copy of the original DataFrame
-    forecast_df = data.copy()
-
-    # Create a new DataFrame for the forecast data
+    # Ubah prediksi menjadi format DataFrame dan tambahkan kolom jenis 'Forecast'
     forecast_data = combined_df.reset_index()
     forecast_data = forecast_data.rename(columns={'index': 'tanggal'})
     forecast_data['jenis'] = 'Forecast'
 
-    # Melt the forecast data to match the original DataFrame structure
+    # Ubah format forecast menjadi seperti data asli
     forecast_data_melted = pd.melt(forecast_data, id_vars=['tanggal', 'jenis'], var_name='dest_name', value_name='tonase')
 
-    # Append the forecast data to the original DataFrame
-    forecast_df = pd.concat([forecast_df, forecast_data_melted], ignore_index=True)
+    # Gabungkan data asli (real dan plan) dengan data forecast
+    combined_forecast_real_plan_df = pd.concat([data, forecast_data_melted], ignore_index=True)
 
-    forecast_df_selected = forecast_df[['tanggal', 'jenis', 'dest_name', 'tonase']]
+    # Hanya ambil kolom yang diperlukan
+    forecast_df_selected = combined_forecast_real_plan_df[['tanggal', 'jenis', 'dest_name', 'tonase']].copy()
 
-    dd = forecast_df_selected[['tanggal', 'jenis', 'dest_name', 'tonase']].astype(str)
-    # dd['tanggal'] = pd.to_datetime(dd['tanggal'])
-    dd['tanggal'] = pd.to_datetime(dd['tanggal'], format='%Y-%m-%d', errors='coerce').dt.date
+    # Pastikan format kolom sesuai
+    forecast_df_selected['tanggal'] = pd.to_datetime(forecast_df_selected['tanggal'], errors='coerce')
+    forecast_df_selected['tonase'] = pd.to_numeric(forecast_df_selected['tonase'], errors='coerce')
 
+    # Forward fill dan backward fill untuk mengisi missing values
+    forecast_df_selected['tonase'] = forecast_df_selected['tonase'].ffill().bfill()
 
-    # Insert into DB
-    for index, row in dd.iterrows():
-        cursor.execute("""
-            IF EXISTS (SELECT 1 FROM dwh_prod.dwh.DM_forecasting_transport_transaction_d WHERE tanggal = ?)
-            BEGIN
-                UPDATE dwh_prod.dwh.DM_forecasting_transport_transaction_d
-                SET jenis = ?, dest_name = ?, tonase = ?
-                WHERE tanggal = ?
-            END
-            ELSE
-            BEGIN
-                INSERT INTO dwh_prod.dwh.DM_forecasting_transport_transaction_d (tanggal, jenis, dest_name, tonase)
-                VALUES (?, ?, ?, ?)
-            END
-            """, 
-            row['tanggal'], row['jenis'], row['dest_name'], row['tonase'],
-            row['tanggal'],  # Untuk kondisi WHERE di bagian UPDATE
-            row['tanggal'], row['jenis'], row['dest_name'], row['tonase'])  # Untuk INSERT
+    start_date = '2023-01-01'
+    end_date = forecast_df_selected['tanggal'].max()
 
-    cnxn.commit()
+    forecast_df_selected = forecast_df_selected[
+        (forecast_df_selected['tanggal'] >= start_date) &
+        (forecast_df_selected['tanggal'] <= end_date)
+    ]
+    print(data['jenis'].unique())
+    print(forecast_df_selected['jenis'].unique())
+    print(forecast_df_selected['dest_name'].unique())
 
-    print(dd.head())
+    # Insert/Update ke database (opsional)
+    if not forecast_df_selected.empty:
+        cursor = cnxn.cursor()
+        for index, row in forecast_df_selected.iterrows():
+            cursor.execute("""
+                IF EXISTS (SELECT 1 FROM dwh_prod.dwh.DM_forecasting_transport_transaction_d WHERE tanggal = ? AND dest_name = ? AND jenis = ?)
+                BEGIN
+                    UPDATE dwh_prod.dwh.DM_forecasting_transport_transaction_d
+                    SET tonase = ?
+                    WHERE tanggal = ? AND dest_name = ? AND jenis = ?
+                END
+                ELSE
+                BEGIN
+                    INSERT INTO dwh_prod.dwh.DM_forecasting_transport_transaction_d (tanggal, jenis, dest_name, tonase)
+                    VALUES (?, ?, ?, ?)
+                END
+                """, 
+                row['tanggal'], row['dest_name'], row['jenis'], row['tonase'],
+                row['tanggal'], row['dest_name'], row['jenis'],
+                row['tanggal'], row['jenis'], row['dest_name'], row['tonase'])
+
+        cnxn.commit()
+        print("Data berhasil diinsert atau diupdate ke dalam database.")
+    else:
+        print("Tidak ada data yang memenuhi kriteria tanggal untuk diinsert/update.")
 
 except Exception as e:
-    print("Terjadi kesalahan dalam koneksi atau eksekusi query:", e)
+    print(f"Gagal terkoneksi: {e}")
+
 finally:
     if 'cnxn' in locals():
         cnxn.close()

@@ -103,12 +103,12 @@ try:
     # Pastikan kolom 'tonase' adalah numeric
     forecast_df_selected['tonase'] = pd.to_numeric(forecast_df_selected['tonase'], errors='coerce')
 
-    # Menghapus baris dengan nilai NaN di kolom 'tonase'
-    forecast_df_selected = forecast_df_selected.dropna(subset=['tonase'])
+    # Menggunakan forward fill terlebih dahulu, lalu backward fill jika ada nilai kosong yang tersisa
+    forecast_df_selected['tonase'] = forecast_df_selected['tonase'].fillna(method='ffill').fillna(method='bfill')
 
     # Filter untuk tanggal antara 2023-01-01 hingga 2023-01-07
-    # forecast_df_selected = forecast_df_selected[
-    #     (forecast_df_selected['tanggal'] >= '2024-10-06') ]
+    forecast_df_selected = forecast_df_selected[
+        (forecast_df_selected['tanggal'] >= '2023-01-01') ]
 
     # Pastikan ada data sebelum melakukan insert/update
     if not forecast_df_selected.empty:
@@ -136,6 +136,8 @@ try:
         print("Data berhasil diinsert atau diupdate ke dalam database.")
     else:
         print("Tidak ada data yang memenuhi kriteria tanggal untuk diinsert/update.")
+
+    print(forecast_df_selected)
 
 except Exception as e:
     print(f"Gagal terkoneksi: {e}")
